@@ -1,0 +1,49 @@
+<launch>
+  <!-- 0. 飞控通信 - 独立终端显示 -->
+  <!-- <node pkg="mavros" type="mavros_node" name="mavros" 
+        output="screen" 
+        
+        respawn="true"
+        respawn_delay="2"/> -->
+
+  <!-- 1. 激光雷达 - 后台运行 -->
+  <include file="/home/jetson/ego_ws/src/livox_ros_driver2/launch_ROS1/msg_MID360.launch" />
+
+  <!-- 2. FAST-LIO2 建图 - 后台运行 -->
+  <include file="/home/jetson/fast_lio2_ws/src/FAST_LIO/launch/mapping_mid360.launch" />
+
+  <!-- 3. RTSP 图像发布 - 后台运行 -->
+  <!--单独启动，一块启动容易报错-->
+  <!-- <node 
+    pkg="person_detection" 
+    type="rtsp_image_publisher" 
+    name="rtsp_image_publisher" 
+    args="rtsp://192.168.144.108 /camera/image_raw"
+    output="screen"
+    respawn="true"
+    respawn_delay="2"
+  /> -->
+
+  <!-- 4. 人体检测节点 - 后台运行 -->
+  <!--单独启动，一块启动容易报错-->
+  <!-- <node 
+    pkg="person_detection" 
+    type="yolov5_person_detection.py" 
+    name="person_detector" 
+    output="screen"
+    respawn="true"
+    respawn_delay="2"
+  /> -->
+
+  <!-- 5. 距离检测节点 - 独立终端显示 -->
+  <!-- <node 
+    pkg="person_detection" 
+    type="distance_calculator" 
+    name="distance_calculator" 
+    output="screen" 
+    launch-prefix="xterm -e"
+    respawn="true"
+    respawn_delay="2"
+  /> -->
+        
+</launch>
