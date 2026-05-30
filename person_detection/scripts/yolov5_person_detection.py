@@ -15,12 +15,11 @@ class PureDetector:
         rospy.init_node('person_detector', anonymous=True)
         self.bridge = CvBridge()
 
-        # ===================== 跳帧降频 =====================
+        # 跳帧降频 
         self.frame_count = 0
         self.process_every_n_frames = 2  # 每2帧检测1次
-        # ====================================================
 
-        # YOLOv5 本地加载（完全按你的路径，不动）
+        # YOLOv5 本地加载
         self.model = torch.hub.load(
             '/home/jetson/yolov5',
             'custom',
@@ -39,10 +38,10 @@ class PureDetector:
         # 订阅者
         self.image_sub = rospy.Subscriber('/camera/image_raw', Image, self.image_callback)
 
-        rospy.loginfo("✅ 人体检测节点启动 ｜ 跳帧降频：每2帧检测1次")
+        rospy.loginfo("人体检测节点启动 ｜ 跳帧降频：每2帧检测1次")
 
     def image_callback(self, msg):
-        # 跳帧降频（不检测直接返回）
+        # 跳帧降频
         self.frame_count += 1
         if self.frame_count % self.process_every_n_frames != 0:
             return

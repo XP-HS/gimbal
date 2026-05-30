@@ -18,9 +18,9 @@ private:
     ros::Subscriber detection_sub_;
     ros::Subscriber odom_sub_;
     ros::Publisher realtime_marker_pub_;
-    ros::Publisher person_points_pub_;  // 发布人物位置给轨迹过滤器
+    ros::Publisher person_points_pub_;
     
-    // Camera intrinsics
+    // 相机内参
     const double fx_ = 690.0;
     const double fy_ = 920.0;
     const double cx_ = 320.0;
@@ -31,7 +31,7 @@ private:
     bool has_cloud_;
     bool has_odom_;
     
-    // FAST-LIO2 Odometry
+    // FAST-LIO2 里程计
     double odom_x_, odom_y_, odom_z_;
     double odom_qx_, odom_qy_, odom_qz_, odom_qw_;
     
@@ -43,7 +43,7 @@ public:
         
         nh.param<std::string>("target_frame", target_frame_, "camera_init");
         
-        cloud_sub_ = nh.subscribe("/cloud_registered", 1, &DistanceCalculator::cloudCallback, this);
+        cloud_sub_ = nh.subscribe("/cloud_registered", 1, &DistanceCalculator::cloudCallback, this); //改，要用局部点云图
         detection_sub_ = nh.subscribe("/detections", 1, &DistanceCalculator::detectionCallback, this);
         odom_sub_ = nh.subscribe("/Odometry", 1, &DistanceCalculator::odomCallback, this);
         
@@ -51,7 +51,7 @@ public:
         person_points_pub_ = nh.advertise<geometry_msgs::PointStamped>("/person_points_raw", 100);
         
         ROS_INFO("Distance Calculator Node Started");
-        ROS_INFO("  - Publishes: /realtime_persons (markers), /person_points_raw (raw points)");
+        ROS_INFO("Publishes: /realtime_persons (markers), /person_points_raw (raw points)");
     }
     
     void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
@@ -65,6 +65,7 @@ public:
         odom_qw_ = msg->pose.pose.orientation.w;
     }
     
+    // 改：雷达系转化到坐标系，用外参矩阵
     void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
         latest_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromROSMsg(*msg, *latest_cloud_);
@@ -95,10 +96,14 @@ public:
         z_cam = z_rot + odom_z_;
     }
     
+
+    //改：整个这个深度计算函数都要改，雷达是360°的，相机只能看到前面，不能拿后面的点算了，还需要加外参矩阵
     double getDepth(double u, double v) {
-        if (!has_cloud_ || latest_cloud_->empty()) return 0.8;
+        if (!has_cloud_ || latest_cloud_->empty()) return 0.8; //改，全是默认0.8会出问题
         
-        double min_dist = 15.0, best_z = 0.8;
+        double min_dist = 15.0, best_z = 0.8;  // 改，默认值啥的都是0，到时候深度是0的话直接不算
+        // 这里直接默认相机和雷达的坐标系重叠了
+        // z似乎也搞错了，如果用的是雷达点云的话
         for (const auto& pt : latest_cloud_->points) {
             if (pt.z < 0.3 || pt.z > 10.0) continue;
             
