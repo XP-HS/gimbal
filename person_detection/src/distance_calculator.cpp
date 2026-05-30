@@ -10,218 +10,182 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <cmath>
 #include <vector>
-#include <tuple>
+#include <tf/transform_listener.h>
+#include <livox_ros_driver2/CustomMsg.h>
+#include <livox_ros_driver2/CustomPoint.h>
 
-class DistanceCalculator {
-private:
-    ros::Subscriber cloud_sub_;
-    ros::Subscriber detection_sub_;
-    ros::Subscriber odom_sub_;
-    ros::Publisher realtime_marker_pub_;
-    ros::Publisher person_points_pub_;
-    
-    // 相机内参
-    const double fx_ = 690.0;
-    const double fy_ = 920.0;
-    const double cx_ = 320.0;
-    const double cy_ = 240.0;
-    const double YAW_CALIBRATION = 0.637;  // 相机偏转角校准
-    
-    pcl::PointCloud<pcl::PointXYZ>::Ptr latest_cloud_;
-    bool has_cloud_;
-    bool has_odom_;
-    
-    // FAST-LIO2 里程计
-    double odom_x_, odom_y_, odom_z_;
-    double odom_qx_, odom_qy_, odom_qz_, odom_qw_;
-    
-    std::string target_frame_;
-    
+class DistanceCalculator
+{
 public:
-    DistanceCalculator() : has_cloud_(false), has_odom_(false) {
-        ros::NodeHandle nh;
-        
-        nh.param<std::string>("target_frame", target_frame_, "camera_init");
-        
-        cloud_sub_ = nh.subscribe("/cloud_registered", 1, &DistanceCalculator::cloudCallback, this); //改，要用局部点云图
-        detection_sub_ = nh.subscribe("/detections", 1, &DistanceCalculator::detectionCallback, this);
-        odom_sub_ = nh.subscribe("/Odometry", 1, &DistanceCalculator::odomCallback, this);
-        
-        realtime_marker_pub_ = nh.advertise<visualization_msgs::MarkerArray>("/realtime_persons", 10);
-        person_points_pub_ = nh.advertise<geometry_msgs::PointStamped>("/person_points_raw", 100);
-        
-        ROS_INFO("Distance Calculator Node Started");
-        ROS_INFO("Publishes: /realtime_persons (markers), /person_points_raw (raw points)");
-    }
-    
-    void odomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
-        has_odom_ = true;
-        odom_x_ = msg->pose.pose.position.x;
-        odom_y_ = msg->pose.pose.position.y;
-        odom_z_ = msg->pose.pose.position.z;
-        odom_qx_ = msg->pose.pose.orientation.x;
-        odom_qy_ = msg->pose.pose.orientation.y;
-        odom_qz_ = msg->pose.pose.orientation.z;
-        odom_qw_ = msg->pose.pose.orientation.w;
-    }
-    
-    // 改：雷达系转化到坐标系，用外参矩阵
-    void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
-        latest_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::fromROSMsg(*msg, *latest_cloud_);
-        has_cloud_ = true;
-    }
-    
-    void transformBodyToCamera(double x_body, double y_body, double z_body,
-                                double& x_cam, double& y_cam, double& z_cam) {
-        if (!has_odom_) {
-            x_cam = x_body; y_cam = y_body; z_cam = z_body;
-            return;
-        }
-        
-        double qx = odom_qx_, qy = odom_qy_, qz = odom_qz_, qw = odom_qw_;
-        
-        double x_rot = (1 - 2*qy*qy - 2*qz*qz) * x_body 
-                     + (2*qx*qy - 2*qz*qw) * y_body 
-                     + (2*qx*qz + 2*qy*qw) * z_body;
-        double y_rot = (2*qx*qy + 2*qz*qw) * x_body 
-                     + (1 - 2*qx*qx - 2*qz*qz) * y_body 
-                     + (2*qy*qz - 2*qx*qw) * z_body;
-        double z_rot = (2*qx*qz - 2*qy*qw) * x_body 
-                     + (2*qy*qz + 2*qx*qw) * y_body 
-                     + (1 - 2*qx*qx - 2*qy*qy) * z_body;
-        
-        x_cam = x_rot + odom_x_;
-        y_cam = y_rot + odom_y_;
-        z_cam = z_rot + odom_z_;
-    }
-    
+    DistanceCalculator()
+    {
+        // 订阅
+        cloud_sub = nh.subscribe("/livox/lidar", 1, &DistanceCalculator::cloudCallback, this);
+        detection_sub = nh.subscribe("/detections", 1, &DistanceCalculator::detectionCallback, this);
+        odom_sub = nh.subscribe("/Odometry", 1, &DistanceCalculator::odomCallback, this);
 
-    //改：整个这个深度计算函数都要改，雷达是360°的，相机只能看到前面，不能拿后面的点算了，还需要加外参矩阵
-    double getDepth(double u, double v) {
-        if (!has_cloud_ || latest_cloud_->empty()) return 0.8; //改，全是默认0.8会出问题
-        
-        double min_dist = 15.0, best_z = 0.8;  // 改，默认值啥的都是0，到时候深度是0的话直接不算
-        // 这里直接默认相机和雷达的坐标系重叠了
-        // z似乎也搞错了，如果用的是雷达点云的话
-        for (const auto& pt : latest_cloud_->points) {
-            if (pt.z < 0.3 || pt.z > 10.0) continue;
-            
-            int uu = static_cast<int>((pt.x * fx_ / pt.z) + cx_);
-            int vv = static_cast<int>((pt.y * fy_ / pt.z) + cy_);
-            double dist = std::hypot(uu - u, vv - v);
-            
-            if (dist < min_dist) {
-                min_dist = dist;
-                best_z = pt.z;
+        // 发布
+        person_pub = nh.advertise<geometry_msgs::PointStamped>("/person_points_world", 10);
+        marker_pub = nh.advertise<visualization_msgs::MarkerArray>("/realtime_persons", 10);
+
+        ROS_INFO("人物距离计算节点启动: Livox机身系转到camera_init世界系");
+    }
+
+private:
+    ros::NodeHandle nh;
+    ros::Subscriber cloud_sub, detection_sub, odom_sub;
+    ros::Publisher person_pub, marker_pub;
+    tf::TransformListener tf_listener;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr body_cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+    bool has_cloud = false;
+    bool has_odom = false;
+
+    // 相机内参
+    const double fx = 690.0;
+    const double fy = 920.0;
+    const double cx = 320.0;
+    const double cy = 240.0;
+    const double yaw_calib = 0.637;
+
+    // 里程计回调
+    void odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
+    {
+        has_odom = true;
+    }
+
+    // LIVOX 点云回调
+    void cloudCallback(const livox_ros_driver2::CustomMsg::ConstPtr& msg)
+    {
+        body_cloud->clear();
+        for (const auto& pt : msg->points)
+        {
+            // p.x p.y p.z = 相对无人机的坐标
+            if (pt.x < 0.2 || pt.x > 12.0) continue;
+            body_cloud->push_back(pcl::PointXYZ(pt.x, pt.y, pt.z));
+        }
+        has_cloud = true;
+    }
+
+    // 深度计算
+    double getDepth(double u, double v)
+    {
+        if (!has_cloud || body_cloud->empty()) return -1;
+
+        double min_dist = 1e9;
+        double best_z = -1;
+
+        for (const auto& p : body_cloud->points)
+        {
+            if (p.z < 0.3 || p.z > 10.0) continue;
+
+            int uu = (p.x * fx / p.z) + cx;
+            int vv = (p.y * fy / p.z) + cy;
+            double d = hypot(uu - u, vv - v);
+
+            if (d < min_dist)
+            {
+                min_dist = d;
+                best_z = p.z;
             }
         }
         return best_z;
     }
-    
-    void detectionCallback(const vision_msgs::Detection2DArrayConstPtr& msg) {
-        if (!has_cloud_) {
-            ROS_WARN_THROTTLE(5, "Waiting for point cloud...");
-            return;
+
+    // 机身系转到世界系
+    bool bodyToWorld(double xb, double yb, double zb, double& xw, double& yw, double& zw, ros::Time t)
+    {
+        try
+        {
+            tf::Stamped<tf::Point> p_in(tf::Point(xb, yb, zb), t, "body");
+            tf::Stamped<tf::Point> p_out;
+            tf_listener.waitForTransform("camera_init", "body", t, ros::Duration(0.05));
+            tf_listener.transformPoint("camera_init", p_in, p_out);
+
+            xw = p_out.x();
+            yw = p_out.y();
+            zw = p_out.z();
+            return true;
         }
-        
-        std::vector<std::tuple<double, double, double, double>> current_persons;
-        
-        for (const auto& det : msg->detections) {
-            double u = det.bbox.center.x;
-            double v = det.bbox.center.y;
-            double confidence = det.results[0].score;
-            
-            double depth = getDepth(u, v);
-            
-            // 计算 body 坐标系下的位置
-            double x_body = depth;
-            double y_body = (cx_ - u) * depth / fx_ + tan(YAW_CALIBRATION) * depth;
-            double z_body = (cy_ - v) * depth / fy_;
-            
-            double distance = std::sqrt(x_body*x_body + y_body*y_body + z_body*z_body);
-            
-            // 转换到 camera_init
-            double x_cam, y_cam, z_cam;
-            transformBodyToCamera(x_body, y_body, z_body, x_cam, y_cam, z_cam);
-            
-            current_persons.push_back({x_cam, y_cam, z_cam, distance});
-            
-            // 发布原始点给轨迹过滤器
-            geometry_msgs::PointStamped point_msg;
-            point_msg.header = msg->header;
-            point_msg.header.frame_id = target_frame_;
-            point_msg.point.x = x_cam;
-            point_msg.point.y = y_cam;
-            point_msg.point.z = z_cam;
-            person_points_pub_.publish(point_msg);
-        }
-        
-        // 发布实时标记
-        if (!current_persons.empty()) {
-            publishRealtimeMarkers(current_persons, msg->header);
+        catch (...)
+        {
+            return false;
         }
     }
-    
-    void publishRealtimeMarkers(const std::vector<std::tuple<double, double, double, double>>& persons,
-                                 const std_msgs::Header& header) {
-        visualization_msgs::MarkerArray marker_array;
-        
-        for (size_t i = 0; i < persons.size(); ++i) {
-            double x = std::get<0>(persons[i]);
-            double y = std::get<1>(persons[i]);
-            double z = std::get<2>(persons[i]);
-            double distance = std::get<3>(persons[i]);
-            
-            visualization_msgs::Marker sphere_marker;
-            sphere_marker.header = header;
-            sphere_marker.header.frame_id = target_frame_;
-            sphere_marker.ns = "realtime_persons";
-            sphere_marker.id = i;
-            sphere_marker.type = visualization_msgs::Marker::SPHERE;
-            sphere_marker.action = visualization_msgs::Marker::ADD;
-            sphere_marker.pose.position.x = x;
-            sphere_marker.pose.position.y = y;
-            sphere_marker.pose.position.z = z;
-            sphere_marker.pose.orientation.w = 1.0;
-            sphere_marker.scale.x = sphere_marker.scale.y = sphere_marker.scale.z = 0.25;
-            sphere_marker.color.r = 0.0;
-            sphere_marker.color.g = 1.0;
-            sphere_marker.color.b = 0.0;
-            sphere_marker.color.a = 0.9;
-            sphere_marker.lifetime = ros::Duration(0.2);
-            marker_array.markers.push_back(sphere_marker);
-            
-            visualization_msgs::Marker text_marker;
-            text_marker.header = header;
-            text_marker.header.frame_id = target_frame_;
-            text_marker.ns = "realtime_labels";
-            text_marker.id = i;
-            text_marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-            text_marker.action = visualization_msgs::Marker::ADD;
-            text_marker.pose.position.x = x;
-            text_marker.pose.position.y = y;
-            text_marker.pose.position.z = z + 0.25;
-            text_marker.pose.orientation.w = 1.0;
-            text_marker.scale.z = 0.12;
-            text_marker.color.r = 0.0;
-            text_marker.color.g = 1.0;
-            text_marker.color.b = 0.0;
-            text_marker.color.a = 1.0;
-            char text[100];
-            snprintf(text, sizeof(text), "%.2fm", distance);
-            text_marker.text = text;
-            text_marker.lifetime = ros::Duration(0.2);
-            marker_array.markers.push_back(text_marker);
+
+    // 检测回调 
+    void detectionCallback(const vision_msgs::Detection2DArrayConstPtr& msg)
+    {
+        if (!has_cloud || !has_odom) return;
+
+        int marker_id = 0;
+        for (const auto& det : msg->detections)
+        {
+            double u = det.bbox.center.x;
+            double v = det.bbox.center.y;
+            double depth = getDepth(u, v);
+
+            if (depth < 0) continue;
+
+            // 计算机身系坐标
+            double xb = depth;
+            double yb = (cx - u) * depth / fx + tan(yaw_calib) * depth;
+            double zb = (cy - v) * depth / fy;
+
+            // 转世界系
+            double xw, yw, zw;
+            if (!bodyToWorld(xb, yb, zb, xw, yw, zw, msg->header.stamp))
+                continue;
+
+            // 发布世界坐标
+            geometry_msgs::PointStamped out;
+            out.header.stamp = msg->header.stamp;
+            out.header.frame_id = "camera_init";
+            out.point.x = xw;
+            out.point.y = yw;
+            out.point.z = zw;
+            person_pub.publish(out);
+
+            // 可视化
+            publishMarker(xw, yw, zw, hypot(xb, hypot(yb, zb)), marker_id++);
         }
-        
-        realtime_marker_pub_.publish(marker_array);
+    }
+
+    // 可视化 
+    void publishMarker(double x, double y, double z, double dist, int id)
+    {
+        visualization_msgs::MarkerArray arr;
+
+        // 球
+        visualization_msgs::Marker m;
+        m.header.frame_id = "camera_init";
+        m.id = id;
+        m.type = m.SPHERE;
+        m.action = m.ADD;
+        m.pose.position.x = x;
+        m.pose.position.y = y;
+        m.pose.position.z = z;
+        m.scale.x = m.scale.y = m.scale.z = 0.3;
+        m.color.g = 1.0;
+        m.color.a = 0.8;
+        arr.markers.push_back(m);
+
+        // 文字
+        m.id += 1000;
+        m.type = m.TEXT_VIEW_FACING;
+        m.pose.position.z += 0.4;
+        m.scale.z = 0.2;
+        m.text = std::to_string(dist).substr(0,4) + "m";
+        arr.markers.push_back(m);
+
+        marker_pub.publish(arr);
     }
 };
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     ros::init(argc, argv, "distance_calculator");
-    DistanceCalculator calculator;
+    DistanceCalculator node;
     ros::spin();
     return 0;
 }

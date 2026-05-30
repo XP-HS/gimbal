@@ -19,6 +19,8 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_conversions
   vision_msgs
   visualization_msgs
+  nav_msgs
+  livox_ros_driver2
 )
 
 ## System dependencies are found with CMake's conventions
@@ -115,7 +117,7 @@ catkin_package(
 #  LIBRARIES person_detection
 #  CATKIN_DEPENDS cv_bridge geometry_msgs rospy sensor_msgs tf
 #  DEPENDS system_lib
-CATKIN_DEPENDS rospy sensor_msgs cv_bridge geometry_msgs tf
+CATKIN_DEPENDS rospy sensor_msgs cv_bridge geometry_msgs tf nav_msgs livox_ros_driver2
 )
 
 ###########
@@ -242,15 +244,18 @@ target_link_libraries(distance_calculator
   ${PCL_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )
-add_dependencies(distance_calculator ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(distance_calculator 
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} 
+  ${catkin_EXPORTED_TARGETS}
+  livox_ros_driver2_generate_messages_cpp
+)
 
 install(TARGETS distance_calculator
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-# ============ 新增节点 ============
 
-# 1. 人员聚类节点
+# 人员聚类节点
 add_executable(person_clustering src/person_clustering.cpp)
 target_link_libraries(person_clustering 
   ${catkin_LIBRARIES}

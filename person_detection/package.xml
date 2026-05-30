@@ -59,7 +59,9 @@
   <build_depend>pcl_ros</build_depend>
   <build_depend>pcl_conversions</build_depend>
   <build_depend>vision_msgs</build_depend>
-   <build_depend>visualization_msgs</build_depend>
+  <build_depend>visualization_msgs</build_depend>
+  <depend>nav_msgs</depend>
+  <depend>livox_ros_driver2</depend>
   <build_export_depend>cv_bridge</build_export_depend>
   <build_export_depend>geometry_msgs</build_export_depend>
   <build_export_depend>rospy</build_export_depend>
