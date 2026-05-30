@@ -51,7 +51,7 @@ class PureDetector:
 
         # YOLO 检测
         with torch.no_grad():
-            results = self.model(img, size=640, rect=True)
+            results = self.model(img, size=640)
 
         boxes = results.xyxy[0]
 

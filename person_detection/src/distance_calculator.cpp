@@ -47,7 +47,7 @@ public:
         sync.reset(new Sync(MySyncPolicy(10), sub_lidar, sub_detections, sub_odom));
         sync->registerCallback(boost::bind(&DistanceCalculator::syncCallback, this, _1, _2, _3));
 
-        ROS_INFO("Distance calculator node started: Transform Livox body frame to camera_init world frame");
+        ROS_INFO("Distance calculator node started");
     }
 
 private:
@@ -66,28 +66,25 @@ private:
 
     ros::Publisher person_pub, marker_pub;
 
-    // 相机内参
-    const double fx = 690.0;
-    const double fy = 920.0;
-    const double cx = 320.0;
-    const double cy = 240.0;
-    const double yaw_calib = 0.637;
+    // 相机内参（标定得到）
+    const double fx = 2282.72;
+    const double fy = 2288.64;
+    const double cx = 966.55;
+    const double cy = 519.82;
 
-    // 相机相对于雷达的外参偏移
-    const double camera_offset_x = 0.18;   // 前
-    const double camera_offset_y = 0.34;   // 下
-    const double camera_offset_z = 0.00;   // 左/右
+    // 相机相对于雷达的外参：前0.18m，下0.34m
+    const double tx = 0.18;
+    const double ty = 0.0;
+    const double tz = 0.34;
 
-    // 滤波系数
-    //alpha 越大（趋近 1）：越相信当前原始数据，响应快、滤波弱，抖动抑制效果差；
-    //alpha 越小（趋近 0）：越相信历史数据，平滑效果强、延迟变大
-    const double alpha = 0.6; 
-    double prev_x = 0, prev_y = 0, prev_z = 0;
-    bool first_estimate = true;
+    // 滤波参数
+    const double alpha = 0.6;
+    double last_x = 0, last_y = 0, last_z = 0;
+    bool first_frame = true;
 
-    // 短时记忆跟踪
+    // 短时记忆
     std::vector<TrackedPerson> tracked_;
-    const double max_memory_duration = 0.5;
+    const double max_memory = 0.5;
 
     // 统一同步回调：雷达、检测、里程计时间对齐后才会调用
     void syncCallback(
@@ -96,23 +93,24 @@ private:
         const nav_msgs::Odometry::ConstPtr& odom_msg)
     {
         // 同步状态打印，1秒限制输出频率
-        ROS_INFO_THROTTLE(1, "Sync callback triggered, detected persons: %d", (int)det_msg->detections.size());
+        ROS_INFO_THROTTLE(1, "Sync callback, persons: %d", (int)det_msg->detections.size());
 
-        // 清除上一帧的所有可视化标记
-        visualization_msgs::MarkerArray delete_array;
-        visualization_msgs::Marker delete_marker;
-        delete_marker.action = visualization_msgs::Marker::DELETEALL;
-        delete_array.markers.push_back(delete_marker);
-        marker_pub.publish(delete_array);
+        // 清除上一帧标记
+        visualization_msgs::MarkerArray del_arr;
+        visualization_msgs::Marker del_m;
+        del_m.action = visualization_msgs::Marker::DELETEALL;
+        del_arr.markers.push_back(del_m);
+        marker_pub.publish(del_arr);
 
-        // 解析当前同步的雷达点云
+        // 解析雷达点云
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
         for (const auto& pt : lidar_msg->points)
         {
-            // 过滤近距离和远距离无效点
             if (pt.x < 0.2 || pt.x > 12.0) continue;
             cloud->push_back(pcl::PointXYZ(pt.x, pt.y, pt.z));
         }
+
+        if (cloud->empty()) return;
 
         std::vector<TrackedPerson> new_tracked;
         ros::Time now = ros::Time::now();
@@ -124,31 +122,41 @@ private:
             double v = det.bbox.center.y;
             double depth = getDepth(u, v, cloud);
 
+            double xb = 0, yb = 0, zb = 0;
             double xw = 0, yw = 0, zw = 0;
             double dist = 0;
             bool valid = false;
 
             if (depth > 0)
             {
-                // 计算机身系坐标，并加入相机外参补偿
-                double xb = depth + camera_offset_x;
-                double yb = (cx - u) * depth / fx + tan(yaw_calib) * depth + camera_offset_y;
-                double zb = (cy - v) * depth / fy + camera_offset_z;
+                // 像素到相机坐标系：右X，下Y，前Z
+                double cx_cam = (u - cx) * depth / fx;
+                double cy_cam = (v - cy) * depth / fy;
+                double cz_cam = depth;
 
-                // 机身系转到世界系
+                // 相机坐标系 → 雷达坐标系【前X、左Y、上Z】
+                double x_lidar = cz_cam + tx;
+                double y_lidar = -cx_cam + ty;
+                double z_lidar = -cy_cam + tz;
+
+                xb = x_lidar;
+                yb = y_lidar;
+                zb = z_lidar;
+
+                // 转到世界系
                 if (bodyToWorld(xb, yb, zb, xw, yw, zw, det_msg->header.stamp))
                 {
-                    dist = hypot(xb, hypot(yb, zb));
+                    dist = sqrt(xb*xb + yb*yb + zb*zb);
                     valid = true;
                 }
             }
 
+            // 短时记忆
             if (!valid)
             {
-                // 雷达点缺失，尝试使用历史记忆
                 for (const auto& t : tracked_)
                 {
-                    if ((now - t.last_time).toSec() < max_memory_duration)
+                    if ((now - t.last_time).toSec() < max_memory)
                     {
                         xw = t.xw;
                         yw = t.yw;
@@ -162,26 +170,26 @@ private:
 
             if (!valid) continue;
 
-            // 一阶低通滤波，平滑抖动
+            // 滤波
             double fxw, fyw, fzw;
-            if (first_estimate)
+            if (first_frame)
             {
                 fxw = xw;
                 fyw = yw;
                 fzw = zw;
-                first_estimate = false;
+                first_frame = false;
             }
             else
             {
-                fxw = alpha * xw + (1 - alpha) * prev_x;
-                fyw = alpha * yw + (1 - alpha) * prev_y;
-                fzw = alpha * zw + (1 - alpha) * prev_z;
+                fxw = alpha * xw + (1 - alpha) * last_x;
+                fyw = alpha * yw + (1 - alpha) * last_y;
+                fzw = alpha * zw + (1 - alpha) * last_z;
             }
-            prev_x = fxw;
-            prev_y = fyw;
-            prev_z = fzw;
+            last_x = fxw;
+            last_y = fyw;
+            last_z = fzw;
 
-            // 保存到新跟踪列表
+            // 保存跟踪
             TrackedPerson p;
             p.xw = fxw;
             p.yw = fyw;
@@ -191,7 +199,7 @@ private:
             p.id = marker_id;
             new_tracked.push_back(p);
 
-            // 发布世界坐标
+            // 发布
             geometry_msgs::PointStamped out;
             out.header.stamp = det_msg->header.stamp;
             out.header.frame_id = "camera_init";
@@ -200,36 +208,43 @@ private:
             out.point.z = fzw;
             person_pub.publish(out);
 
-            // 可视化标记
             publishMarker(fxw, fyw, fzw, dist, marker_id++);
         }
 
-        // 更新跟踪列表
         tracked_ = new_tracked;
     }
 
-    // 深度计算
+    // 深度计算：雷达点反向投影到像素
     double getDepth(double u, double v, const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
     {
         double min_dist = 1e9;
-        double best_z = -1;
+        double best_depth = -1;
 
         for (const auto& p : cloud->points)
         {
-            if (p.z < 0.3 || p.z > 10.0) continue;
+            // 只过滤【前后距离】，不过滤高度！！！（这是你距离偏大的核心原因）
+            if (p.x < 0.3 || p.x > 10.0)
+                continue;
 
-            int uu = (p.x * fx / p.z) + cx;
-            int vv = (p.y * fy / p.z) + cy;
+            // 雷达 → 相机坐标系正确映射
+            double cx_cam = -p.y;
+            double cy_cam = -p.z;
+            double cz_cam = p.x;
+
+            // 投影到像素
+            int uu = cx_cam * fx / cz_cam + cx;
+            int vv = cy_cam * fy / cz_cam + cy;
+
             double d = hypot(uu - u, vv - v);
-
             if (d < min_dist)
             {
                 min_dist = d;
-                best_z = p.z;
+                best_depth = cz_cam;  // 真实前方距离
             }
         }
-        return best_z;
+        return best_depth;
     }
+
 
     // 机身系转到世界系
     bool bodyToWorld(double xb, double yb, double zb, double& xw, double& yw, double& zw, ros::Time t)
@@ -272,7 +287,7 @@ private:
         m.lifetime = ros::Duration(0.3);
         arr.markers.push_back(m);
 
-        // 距离文字标记
+        // 距离文字
         m.id += 1000;
         m.type = m.TEXT_VIEW_FACING;
         m.pose.position.z += 0.4;
