@@ -21,6 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   nav_msgs
   livox_ros_driver2
+  message_filters
 )
 
 ## System dependencies are found with CMake's conventions
