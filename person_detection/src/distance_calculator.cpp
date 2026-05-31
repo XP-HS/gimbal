@@ -42,8 +42,6 @@ public:
         sub_lidar.subscribe(nh, "/livox/lidar", 10);
         sub_detections.subscribe(nh, "/detections", 10);
         sub_odom.subscribe(nh, "/Odometry", 10);
-
-        // ROS Noetic 兼容版本同步策略
         sync.reset(new Sync(MySyncPolicy(10), sub_lidar, sub_detections, sub_odom));
         sync->registerCallback(boost::bind(&DistanceCalculator::syncCallback, this, _1, _2, _3));
 
@@ -90,17 +88,10 @@ private:
     void syncCallback(
         const CustomMsg::ConstPtr& lidar_msg,
         const vision_msgs::Detection2DArrayConstPtr& det_msg,
-        const nav_msgs::Odometry::ConstPtr& odom_msg)
+        const nav_msgs::OdometryConstPtr& odom_msg)
     {
         // 同步状态打印，1秒限制输出频率
         ROS_INFO_THROTTLE(1, "Sync callback, persons: %d", (int)det_msg->detections.size());
-
-        // 清除上一帧标记
-        visualization_msgs::MarkerArray del_arr;
-        visualization_msgs::Marker del_m;
-        del_m.action = visualization_msgs::Marker::DELETEALL;
-        del_arr.markers.push_back(del_m);
-        marker_pub.publish(del_arr);
 
         // 解析雷达点云
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
@@ -134,7 +125,7 @@ private:
                 double cy_cam = (v - cy) * depth / fy;
                 double cz_cam = depth;
 
-                // 相机坐标系 → 雷达坐标系【前X、左Y、上Z】
+                // 相机坐标系到雷达坐标系【前X、左Y、上Z】
                 double x_lidar = cz_cam + tx;
                 double y_lidar = -cx_cam + ty;
                 double z_lidar = -cy_cam + tz;
@@ -222,14 +213,15 @@ private:
 
         for (const auto& p : cloud->points)
         {
-            // 只过滤【前后距离】，不过滤高度！！！（这是你距离偏大的核心原因）
             if (p.x < 0.3 || p.x > 10.0)
                 continue;
 
-            // 雷达 → 相机坐标系正确映射
+            // 雷达到相机坐标系正确映射
             double cx_cam = -p.y;
             double cy_cam = -p.z;
             double cz_cam = p.x;
+
+            if (cz_cam < 0.1) continue;
 
             // 投影到像素
             int uu = cx_cam * fx / cz_cam + cx;
@@ -239,12 +231,11 @@ private:
             if (d < min_dist)
             {
                 min_dist = d;
-                best_depth = cz_cam;  // 真实前方距离
+                best_depth = cz_cam;
             }
         }
         return best_depth;
     }
-
 
     // 机身系转到世界系
     bool bodyToWorld(double xb, double yb, double zb, double& xw, double& yw, double& zw, ros::Time t)
