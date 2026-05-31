@@ -299,3 +299,16 @@ add_dependencies(test_person_publisher ${${PROJECT_NAME}_EXPORTED_TARGETS} ${cat
 install(TARGETS test_person_publisher
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+
+add_executable(aerial_shot src/aerial_shot.cpp)
+target_link_libraries(aerial_shot
+  ${catkin_LIBRARIES}
+)
+add_dependencies(aerial_shot
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+
+install(TARGETS aerial_shot
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

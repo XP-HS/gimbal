@@ -118,12 +118,12 @@ private:
             double dist = 0;
             bool valid = false;
 
-            if (depth > 0)
+            if (depth > 0.18)
             {
                 // 像素到相机坐标系：右X，下Y，前Z
-                double cx_cam = (u - cx) * depth / fx;
-                double cy_cam = (v - cy) * depth / fy;
-                double cz_cam = depth;
+                double cx_cam = (u - cx) * (depth-tx)/ fx;
+                double cy_cam = (v - cy) * (depth-tx)/ fy;
+                double cz_cam = depth - tx;
 
                 // 相机坐标系到雷达坐标系【前X、左Y、上Z】
                 double x_lidar = cz_cam + tx;
@@ -199,7 +199,7 @@ private:
             out.point.z = fzw;
             person_pub.publish(out);
 
-            publishMarker(fxw, fyw, fzw, dist, marker_id++);
+            publishMarker(fxw, fyw, fzw, dist, marker_id++, det_msg->header.stamp);
         }
 
         tracked_ = new_tracked;
@@ -259,33 +259,42 @@ private:
     }
 
     // 可视化发布
-    void publishMarker(double x, double y, double z, double dist, int id)
+    void publishMarker(double x, double y, double z, double dist, int id, ros::Time stamp)
     {
         visualization_msgs::MarkerArray arr;
 
         // 球体标记
         visualization_msgs::Marker m;
         m.header.frame_id = "camera_init";
+        m.header.stamp = stamp;
         m.id = id;
         m.type = m.SPHERE;
         m.action = m.ADD;
         m.pose.position.x = x;
         m.pose.position.y = y;
         m.pose.position.z = z;
+        // 补全姿态
+        m.pose.orientation.x = 0.0;
+        m.pose.orientation.y = 0.0;
+        m.pose.orientation.z = 0.0;
+        m.pose.orientation.w = 1.0;
         m.scale.x = m.scale.y = m.scale.z = 0.3;
+
+        m.color.r = 0.0;
         m.color.g = 1.0;
+        m.color.b = 0.0;
         m.color.a = 0.8;
         m.lifetime = ros::Duration(0.3);
         arr.markers.push_back(m);
 
         // 距离文字
-        m.id += 1000;
-        m.type = m.TEXT_VIEW_FACING;
-        m.pose.position.z += 0.4;
-        m.scale.z = 0.2;
-        m.text = std::to_string(dist).substr(0,4) + "m";
-        m.lifetime = ros::Duration(0.3);
-        arr.markers.push_back(m);
+        visualization_msgs::Marker text_m = m;
+        text_m.id = id + 10000;
+        text_m.type = m.TEXT_VIEW_FACING;
+        text_m.pose.position.z += 0.4;
+        text_m.scale.z = 0.2;
+        text_m.text = std::to_string(dist).substr(0,4) + "m";
+        arr.markers.push_back(text_m);
 
         marker_pub.publish(arr);
     }
